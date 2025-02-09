@@ -1,41 +1,58 @@
-/* eslint-disable prefer-const */
 /* eslint-disable jsdoc/require-jsdoc */
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { NextResponse } from "next/server";
 
-let messages: Array<{ message: string; timestamp: number }> = [];
-let clients = new Set<WritableStreamDefaultWriter>();
+// Store messages in memory
+const messages: Array<{ message: string; timestamp: number }> = [];
+
+// Keep track of connected clients
+const clients = new Set<ReadableStreamDefaultController<string>>();
 
 export async function POST(request: Request) {
-  const data = await request.json();
-  messages.push(data);
+  try {
+    const data = await request.json();
+    messages.push(data);
 
-  // Notify all connected clients about the new message
-  clients.forEach(client => {
-    client.write(new TextEncoder().encode(`data: ${JSON.stringify(messages)}\n\n`));
-  });
+    // Notify all connected clients with proper SSE format
+    clients.forEach(controller => {
+      controller.enqueue(`data: ${JSON.stringify(messages)}\n\n`);
+    });
 
-  return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: "Failed to process message" },
+      { status: 500 },
+    );
+  }
 }
 
-export async function GET(request: Request) {
-  // Added request parameter here
-  const stream = new TransformStream();
-  const writer = stream.writable.getWriter();
-  clients.add(writer);
+export async function GET() {
+  try {
+    const stream = new ReadableStream({
+      start(controller: ReadableStreamDefaultController<string>) {
+        clients.add(controller);
 
-  // Send initial messages
-  writer.write(new TextEncoder().encode(`data: ${JSON.stringify(messages)}\n\n`));
+        // Send initial messages with proper SSE format
+        controller.enqueue(`data: ${JSON.stringify(messages)}\n\n`);
 
-  // Remove client when connection closes
-  request.signal.addEventListener("abort", () => {
-    clients.delete(writer);
-  });
+        return () => {
+          clients.delete(controller);
+        };
+      },
+    });
 
-  return new NextResponse(stream.readable, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  });
+    return new NextResponse(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: "Failed to establish stream" },
+      { status: 500 },
+    );
+  }
 }
